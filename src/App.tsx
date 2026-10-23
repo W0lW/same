@@ -122,7 +122,7 @@ export default function App() {
       {/* Global Error Banner */}
       {error && !isBackendUnreachable && (
         <div className="max-w-md mx-auto my-2 px-4 py-2 rounded-xl bg-rose-950/80 border border-rose-500/50 text-rose-200 text-xs text-center shadow-lg z-50">
-          {error}
+          {typeof error === 'string' ? error : JSON.stringify(error)}
         </div>
       )}
 

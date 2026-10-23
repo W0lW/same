@@ -37,7 +37,7 @@ async function startServer() {
     const playerId = req.query.playerId as string;
 
     if (!roomCode || !playerId) {
-      return res.status(400).send('roomCode and playerId are required');
+      return res.status(400).json({ success: false, error: 'roomCode and playerId are required' });
     }
 
     gameServer.registerSSE(roomCode, playerId, res);
@@ -49,7 +49,7 @@ async function startServer() {
     const room = gameServer.getRoom(roomCode);
 
     if (!room) {
-      return res.status(404).json({ error: 'Stanza non trovata' });
+      return res.status(404).json({ success: false, error: 'Stanza non trovata' });
     }
 
     const sanitized = gameServer.getSanitizedRoom(room, playerId || '');

@@ -178,11 +178,27 @@ export async function safeFetchJson<T = any>(
     }
 
     if (!res.ok) {
+      let errorString: string;
+      if (typeof data?.error === 'string') {
+        errorString = data.error;
+      } else if (typeof data?.error?.message === 'string') {
+        errorString = data.error.message;
+      } else if (typeof data?.message === 'string') {
+        errorString = data.message;
+      } else if (data && typeof data === 'object' && (data.error || data.message)) {
+        const errObj = data.error || data;
+        errorString = errObj.code 
+          ? `${errObj.code}: ${errObj.message || 'Errore del server'}` 
+          : JSON.stringify(errObj);
+      } else {
+        errorString = `Errore del server (HTTP ${res.status})`;
+      }
+
       return {
         ok: false,
         status: res.status,
         data,
-        error: data?.error || `Errore del server (HTTP ${res.status})`,
+        error: errorString,
       };
     }
 

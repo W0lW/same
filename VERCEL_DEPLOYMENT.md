@@ -38,9 +38,39 @@ Nel motore WebKit (Safari su macOS, iOS, iPadOS):
 
 ---
 
-## 3. Configurazione Esatta Richiesta su Vercel
+## 3. Risoluzione Errore `ERR_MODULE_NOT_FOUND` su Vercel Serverless
 
-Poiché *Same Wavelength* richiede un backend autorevole per la gestione delle stanze private, dei timer al secondo e della segretezza delle risposte fino alla rivelazione:
+### Causa della root cause
+In `package.json` è impostato `"type": "module"` (ESM). In ambiente Vercel Serverless:
+- I file collocati nella directory `api/` eseguiti come Node ESM falliscono se importano file esterni senza estensione esplicita o se i percorsi relativi puntano a file non inclusi nel pacchetto Lambda (`/var/task/src/server/gameServer`).
+- Il frontend tentando di mostrare l'oggetto d'errore restituito da Vercel (`{ error: { code: 'ERR_MODULE_NOT_FOUND', ... } }`) causava inoltre il **React error #31** (`Objects are not valid as a React child`).
+
+### Correzione Applicata:
+1. **Bundling Standalone con esbuild**:
+   - Creato `src/server/serverless.ts` come sorgente pulito per l'endpoint serverless Express.
+   - Modificato lo script di build in `package.json`:
+     `"build": "vite build && esbuild src/server/serverless.ts --bundle --platform=node --format=esm --target=node18 --outfile=api/index.js --external:express"`
+   - Durante `npm run build`, esbuild compila tutto il codice necessario (`gameServer`, catalogo domande, logica punteggi) in un unico file autonomo `api/index.js` (53 KB), azzerando qualsiasi rischio di moduli mancanti in `/var/task/`.
+2. **Aggiornamento di `vercel.json`**:
+   - Rewrite diretto `/api/(.*)` -> `/api/index.js`.
+3. **Prevenzione React Error #31**:
+   - Garantito in `src/utils/api.ts` e nei componenti React (`App.tsx`, `JoinRoomModal.tsx`) che qualsiasi messaggio o payload d'errore (anche se oggetto complesso) venga convertito in stringa prima di essere renderizzato.
+
+---
+
+## 4. Modalità di Esecuzione su Vercel
+
+Puoi utilizzare **Same Wavelength** su Vercel in due modi:
+
+### Modalità A: Tutto su Vercel (Funzioni Serverless Dirette)
+Grazie al bundle autonomo `api/index.js` generato automaticamente dalla build:
+1. Collega la repository su Vercel.
+2. Build Command: `npm run build` (già impostato di default).
+3. Output Directory: `dist` (già impostato di default).
+4. Le chiamate `/api/rooms/create`, `/api/rooms/join`, `/api/rooms/:code/state`, ecc., vengono gestite direttamente dalla funzione serverless Vercel. Il gioco include il fallback automatico ad HTTP Polling per gestire la sincronizzazione in ambienti serverless.
+
+### Modalità B: Vercel per Frontend + Backend Dedicato su Render/Railway (Consigliato per lunghe sessioni)
+Per sessioni multiplayer lunghe con WebSocket/SSE persistenti e memoria condivisa ininterrotta senza limiti di timeout serverless:
 
 ### Passo 1: Pubblica il Backend Gratuito su Render o Railway
 1. Vai su [Render.com](https://render.com/) (o [Railway.app](https://railway.app/)) e crea un account gratuito.

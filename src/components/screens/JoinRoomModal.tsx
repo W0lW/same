@@ -81,7 +81,7 @@ export const JoinRoomModal: React.FC<JoinRoomModalProps> = ({
 
         {joinError && (
           <div className="mb-4 p-3 rounded-xl bg-rose-950/50 border border-rose-500/40 text-rose-200 text-xs">
-            {joinError}
+            {typeof joinError === 'string' ? joinError : JSON.stringify(joinError)}
           </div>
         )}
 
