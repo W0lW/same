@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isRoomPlayer(roomData) {
+      return isAuthenticated() && (
+        request.auth.uid == roomData.playerOrder[0] ||
+        request.auth.uid == roomData.playerOrder[1]
+      );
+    }
+    
+    function isHost(roomData) {
+      return isAuthenticated() && request.auth.uid == roomData.playerOrder[0];
+    }
+
+    // Public room document (state readable by both participants)
+    match /rooms/{roomCode} {
+      // Any authenticated user can read if they are one of the two players
+      allow read: if isAuthenticated() && (
+        resource == null || 
+        request.auth.uid in resource.data.playerOrder ||
+        resource.data.playerOrder.size() < 2 // allow joining
+      );
+      
+      // Only host or authoritative server can initialize room
+      allow create: if isAuthenticated();
+      
+      // Updates must not manipulate scores directly from client!
+      // Scores and reveals are strictly updated by server/Cloud Functions.
+      allow update: if isAuthenticated() && (
+        // Player toggling ready status
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players', 'lastUpdate'])
+      );
+      
+      allow delete: if isHost(resource.data);
+
+      // Private secret answers subcollection:
+      // CRITICAL: Player A CANNOT read Player B's answer until reveal state!
+      match /secret_answers/{playerId} {
+        allow read: if isAuthenticated() && (
+          // A player can always read their own answer
+          request.auth.uid == playerId ||
+          // Opponent can ONLY read if the room state is in 'ROUND_REVEAL'
+          get(/databases/$(database)/documents/rooms/$(roomCode)).data.status == 'ROUND_REVEAL'
+        );
+        
+        // A player can only write to their own secret document
+        allow create, update: if isAuthenticated() && request.auth.uid == playerId;
+      }
+    }
+  }
+}

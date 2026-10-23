@@ -1,0 +1,6 @@
+{
+  "name": "Same Wavelength - Multiplayer Party Game",
+  "description": "Party game multiplayer online per 2 giocatori tra intuizione, bluff, caos, mascotte anime e Secret Chemistry.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
