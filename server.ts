@@ -13,6 +13,11 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Health check used by the hosting platform.
+  app.get('/api/health', (_req: Request, res: Response) => {
+    res.json({ ok: true, timestamp: Date.now() });
+  });
+
   // API Endpoints
   app.post('/api/rooms/create', (req: Request, res: Response) => {
     const { hostName, mascot, accessory, settings } = req.body || {};
