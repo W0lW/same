@@ -10,6 +10,7 @@ interface JoinRoomModalProps {
   onSubmit: (code: string, name: string, mascot: MascotType, accessory: MascotAccessory) => Promise<boolean>;
   isLoading?: boolean;
   defaultCode?: string;
+  error?: string | null;
 }
 
 const ACCESSORIES: { id: MascotAccessory; label: string }[] = [
@@ -28,6 +29,7 @@ export const JoinRoomModal: React.FC<JoinRoomModalProps> = ({
   onSubmit,
   isLoading = false,
   defaultCode = '',
+  error = null,
 }) => {
   const [roomCode, setRoomCode] = useState(defaultCode);
   const [nickname, setNickname] = useState('');
@@ -79,9 +81,9 @@ export const JoinRoomModal: React.FC<JoinRoomModalProps> = ({
           </div>
         </div>
 
-        {joinError && (
+        {(error || joinError) && (
           <div className="mb-4 p-3 rounded-xl bg-rose-950/50 border border-rose-500/40 text-rose-200 text-xs">
-            {typeof joinError === 'string' ? joinError : JSON.stringify(joinError)}
+            {error || joinError}
           </div>
         )}
 

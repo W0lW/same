@@ -225,6 +225,7 @@ export default function App() {
         onSubmit={handleJoinSubmit}
         isLoading={isJoining}
         defaultCode={joinCodeParam}
+        error={error}
       />
 
       <HowToPlayModal
