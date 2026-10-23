@@ -1,7 +1,35 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { RoomState, PlayerProfile, ClientSyncPayload } from '../types/game';
 import { sounds } from '../audio/soundEffects';
-import { safeFetchJson, getBackendBaseUrl } from '../utils/api';
+import { safeFetchJson, buildApiUrl } from '../utils/api';
+
+// Safe SessionStorage wrappers for Safari Private Browsing
+function safeSessionGet(key: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSessionSet(key: string, value: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // quota exceeded or private mode
+  }
+}
+
+function safeSessionRemove(key: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
 
 export interface UseMultiplayerReturn {
   room: RoomState | null;
@@ -28,12 +56,8 @@ export interface UseMultiplayerReturn {
 
 export function useMultiplayer(): UseMultiplayerReturn {
   const [room, setRoom] = useState<RoomState | null>(null);
-  const [playerId, setPlayerId] = useState<string | null>(() => {
-    return typeof window !== 'undefined' ? sessionStorage.getItem('sw_player_id') : null;
-  });
-  const [roomCode, setRoomCode] = useState<string | null>(() => {
-    return typeof window !== 'undefined' ? sessionStorage.getItem('sw_room_code') : null;
-  });
+  const [playerId, setPlayerId] = useState<string | null>(() => safeSessionGet('sw_player_id'));
+  const [roomCode, setRoomCode] = useState<string | null>(() => safeSessionGet('sw_room_code'));
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [isBackendUnreachable, setIsBackendUnreachable] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,14 +74,17 @@ export function useMultiplayer(): UseMultiplayerReturn {
   const triggerWebNotification = useCallback((title: string, body: string) => {
     setInAppNotification({ title, body });
 
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
       try {
-        new Notification(title, {
-          body,
-          icon: '/favicon.ico',
-        });
-      } catch {
-        // Notification API in restricted iframe
+        if (Notification.permission === 'granted') {
+          new Notification(title, {
+            body,
+            icon: '/favicon.ico',
+          });
+        }
+      } catch (err) {
+        // Notification API can throw in Safari when not permitted
+        console.debug('[SameWavelength] System notification error (safely handled):', err);
       }
     }
   }, []);
@@ -119,6 +146,8 @@ export function useMultiplayer(): UseMultiplayerReturn {
       clearInterval(pollIntervalRef.current);
     }
 
+    console.log(`[SameWavelength Sync] Starting HTTP polling fallback for room ${code}...`);
+
     const poll = async () => {
       const res = await safeFetchJson<{ room: RoomState }>(`/api/rooms/${code}/state?playerId=${pId}`);
       if (res.ok && res.data?.room) {
@@ -133,7 +162,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
     pollIntervalRef.current = setInterval(poll, 1500);
   }, [handleStateSync]);
 
-  // Connect via SSE with automatic polling fallback
+  // Connect via SSE with automatic polling fallback and Safari-safe URL parsing
   const connectSSE = useCallback((code: string, pId: string) => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -144,14 +173,23 @@ export function useMultiplayer(): UseMultiplayerReturn {
       pollIntervalRef.current = null;
     }
 
-    const baseUrl = getBackendBaseUrl();
-    const url = `${baseUrl}/api/rooms/${code}/events?playerId=${pId}`;
+    // Always generate a safe, absolute URL string
+    const sseUrl = buildApiUrl(`/api/rooms/${encodeURIComponent(code)}/events?playerId=${encodeURIComponent(pId)}`);
+    console.log(`[SameWavelength Sync] Connecting to SSE at: ${sseUrl}`);
+
+    // Check if EventSource is supported
+    if (typeof window === 'undefined' || !('EventSource' in window)) {
+      console.log('[SameWavelength Sync] EventSource not available, falling back to polling.');
+      startPolling(code, pId);
+      return;
+    }
 
     try {
-      const es = new EventSource(url);
+      const es = new EventSource(sseUrl);
       eventSourceRef.current = es;
 
       es.onopen = () => {
+        console.log('[SameWavelength Sync] SSE Connection established.');
         setIsConnected(true);
         setIsBackendUnreachable(false);
         setError(null);
@@ -159,6 +197,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
 
       es.onmessage = (event) => {
         try {
+          if (!event.data || typeof event.data !== 'string') return;
           const data = JSON.parse(event.data);
           if (data.type === 'SYNC') {
             const sync: ClientSyncPayload = data.payload;
@@ -167,22 +206,27 @@ export function useMultiplayer(): UseMultiplayerReturn {
             triggerWebNotification(data.notification.title, data.notification.body);
             sounds.playClick();
           }
-        } catch (err) {
-          console.error('Error parsing SSE data:', err);
+        } catch (parseErr) {
+          console.warn('[SameWavelength Sync] Error parsing SSE payload:', parseErr, event.data);
         }
       };
 
-      es.onerror = () => {
-        // If SSE fails (common in serverless like Vercel), fall back to HTTP polling
+      es.onerror = (err) => {
+        console.warn('[SameWavelength Sync] SSE encountered error or closed by server. Switching to HTTP polling.', err);
         setIsConnected(false);
         if (eventSourceRef.current) {
           eventSourceRef.current.close();
           eventSourceRef.current = null;
         }
+        // Seamless fallback to polling
         startPolling(code, pId);
       };
-    } catch {
-      // EventSource instantiation failed, fallback to polling
+    } catch (err: any) {
+      // Catch WebKit's "The string did not match the expected pattern" or network syntax error
+      console.warn('[SameWavelength Sync] EventSource creation threw exception, safely switching to polling:', err);
+      if (eventSourceRef.current) {
+        eventSourceRef.current = null;
+      }
       startPolling(code, pId);
     }
   }, [handleStateSync, startPolling, triggerWebNotification]);
@@ -190,7 +234,8 @@ export function useMultiplayer(): UseMultiplayerReturn {
   // Initial reconnect on mount from sessionStorage
   useEffect(() => {
     if (roomCode && playerId) {
-      safeFetchJson<{ room: RoomState }>(`/api/rooms/${roomCode}/state?playerId=${playerId}`)
+      console.log(`[SameWavelength] Reconnecting existing session: room ${roomCode}, player ${playerId}`);
+      safeFetchJson<{ room: RoomState }>(`/api/rooms/${encodeURIComponent(roomCode)}/state?playerId=${encodeURIComponent(playerId)}`)
         .then((res) => {
           if (res.ok && res.data?.room) {
             setRoom(res.data.room);
@@ -200,9 +245,9 @@ export function useMultiplayer(): UseMultiplayerReturn {
               setIsBackendUnreachable(true);
               setError(res.error || 'Backend non raggiungibile');
             } else {
-              // Room expired
-              sessionStorage.removeItem('sw_room_code');
-              sessionStorage.removeItem('sw_player_id');
+              console.log('[SameWavelength] Session no longer valid, clearing cache.');
+              safeSessionRemove('sw_room_code');
+              safeSessionRemove('sw_player_id');
               setRoomCode(null);
               setPlayerId(null);
             }
@@ -245,13 +290,14 @@ export function useMultiplayer(): UseMultiplayerReturn {
       }
 
       const { roomCode: newCode, playerId: newPlayerId } = res.data;
-      sessionStorage.setItem('sw_room_code', newCode);
-      sessionStorage.setItem('sw_player_id', newPlayerId);
+      safeSessionSet('sw_room_code', newCode);
+      safeSessionSet('sw_player_id', newPlayerId);
       setRoomCode(newCode);
       setPlayerId(newPlayerId);
       connectSSE(newCode, newPlayerId);
       return newCode;
     } catch (err: any) {
+      console.error('[SameWavelength] createRoom threw:', err);
       setError(err.message || 'Errore di connessione');
       return null;
     }
@@ -283,13 +329,14 @@ export function useMultiplayer(): UseMultiplayerReturn {
       }
 
       const { playerId: newPlayerId } = res.data;
-      sessionStorage.setItem('sw_room_code', cleanCode);
-      sessionStorage.setItem('sw_player_id', newPlayerId);
+      safeSessionSet('sw_room_code', cleanCode);
+      safeSessionSet('sw_player_id', newPlayerId);
       setRoomCode(cleanCode);
       setPlayerId(newPlayerId);
       connectSSE(cleanCode, newPlayerId);
       return true;
     } catch (err: any) {
+      console.error('[SameWavelength] joinRoom threw:', err);
       setError(err.message || 'Errore durante l\'accesso alla stanza');
       return false;
     }
@@ -298,7 +345,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
   const submitAnswer = async (answer: string): Promise<boolean> => {
     if (!roomCode || !playerId) return false;
     try {
-      const res = await safeFetchJson<{ success: boolean }>(`/api/rooms/${roomCode}/submit`, {
+      const res = await safeFetchJson<{ success: boolean }>(`/api/rooms/${encodeURIComponent(roomCode)}/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ playerId, answer }),
@@ -311,6 +358,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
       sounds.playClick();
       return true;
     } catch (err: any) {
+      console.error('[SameWavelength] submitAnswer threw:', err);
       setError(err.message || 'Errore di rete');
       return false;
     }
@@ -319,7 +367,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
   const toggleReady = async () => {
     if (!roomCode || !playerId || !room) return;
     const currentReady = room.players[playerId]?.isReady ?? false;
-    await safeFetchJson(`/api/rooms/${roomCode}/ready`, {
+    await safeFetchJson(`/api/rooms/${encodeURIComponent(roomCode)}/ready`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playerId, isReady: !currentReady }),
@@ -329,7 +377,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
 
   const updateProfile = async (updates: Partial<Pick<PlayerProfile, 'name' | 'mascot' | 'accessory'>>) => {
     if (!roomCode || !playerId) return;
-    await safeFetchJson(`/api/rooms/${roomCode}/update-profile`, {
+    await safeFetchJson(`/api/rooms/${encodeURIComponent(roomCode)}/update-profile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playerId, updates }),
@@ -339,7 +387,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
   const startGame = async (): Promise<boolean> => {
     if (!roomCode || !playerId) return false;
     try {
-      const res = await safeFetchJson<{ success: boolean }>(`/api/rooms/${roomCode}/start`, {
+      const res = await safeFetchJson<{ success: boolean }>(`/api/rooms/${encodeURIComponent(roomCode)}/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ playerId }),
@@ -351,6 +399,7 @@ export function useMultiplayer(): UseMultiplayerReturn {
       }
       return true;
     } catch (err: any) {
+      console.error('[SameWavelength] startGame threw:', err);
       setError(err.message || 'Errore di avvio');
       return false;
     }
@@ -358,14 +407,14 @@ export function useMultiplayer(): UseMultiplayerReturn {
 
   const skipReveal = async () => {
     if (!roomCode) return;
-    await safeFetchJson(`/api/rooms/${roomCode}/skip-reveal`, {
+    await safeFetchJson(`/api/rooms/${encodeURIComponent(roomCode)}/skip-reveal`, {
       method: 'POST',
     });
   };
 
   const requestRematch = async () => {
     if (!roomCode) return;
-    await safeFetchJson(`/api/rooms/${roomCode}/rematch`, {
+    await safeFetchJson(`/api/rooms/${encodeURIComponent(roomCode)}/rematch`, {
       method: 'POST',
     });
   };
@@ -379,8 +428,8 @@ export function useMultiplayer(): UseMultiplayerReturn {
       clearInterval(pollIntervalRef.current);
       pollIntervalRef.current = null;
     }
-    sessionStorage.removeItem('sw_room_code');
-    sessionStorage.removeItem('sw_player_id');
+    safeSessionRemove('sw_room_code');
+    safeSessionRemove('sw_player_id');
     setRoomCode(null);
     setPlayerId(null);
     setRoom(null);

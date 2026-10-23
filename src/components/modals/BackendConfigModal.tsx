@@ -29,23 +29,25 @@ export const BackendConfigModal: React.FC<BackendConfigModalProps> = ({
     const targetUrl = backendUrl.trim().replace(/\/+$/, '');
     const fullUrl = targetUrl ? `${targetUrl}/api/rooms/TEST99/state` : '/api/rooms/TEST99/state';
 
+    // Test connection using safeFetchJson
     try {
-      const res = await fetch(fullUrl, { headers: { 'Accept': 'application/json' } });
-      const contentType = res.headers.get('content-type') || '';
-
-      if (contentType.includes('application/json')) {
-        // A 404 with JSON {"error": "Stanza non trovata"} confirms the API backend is ALIVE and responding!
+      const res = await safeFetchJson<{ room: any }>('/api/rooms/TEST99/state');
+      if (res.status === 404 && res.data?.error === 'Stanza non trovata') {
+        // A 404 JSON with {"error": "Stanza non trovata"} confirms the backend API is ALIVE!
         setTestStatus('success');
         setStatusMessage('Connessione al backend riuscita! Il server risponde con JSON valido.');
         sounds.playMatch();
-      } else {
-        const text = await res.text();
+      } else if (res.ok) {
+        setTestStatus('success');
+        setStatusMessage('Connessione al backend riuscita!');
+        sounds.playMatch();
+      } else if (res.isHtmlFallback) {
         setTestStatus('error');
-        if (text.includes('The page c') || res.status === 404) {
-          setStatusMessage('Il server ha risposto con una pagina HTML 404. Su Vercel è necessario un backend attivo o la Serverless Function.');
-        } else {
-          setStatusMessage(`Risposta non valida (HTTP ${res.status}): non è un'API JSON.`);
-        }
+        setStatusMessage('Il server ha risposto con una pagina HTML 404. Su Vercel è necessario configurare VITE_BACKEND_URL.');
+        sounds.playMiss();
+      } else {
+        setTestStatus('error');
+        setStatusMessage(res.error || `Risposta non valida (HTTP ${res.status})`);
         sounds.playMiss();
       }
     } catch (err: any) {

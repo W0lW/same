@@ -1,7 +1,8 @@
 /**
  * Safe API client for Same Wavelength
- * Handles relative and absolute backend URLs, content-type verification,
- * and graceful error reporting preventing JSON parse crashes.
+ * Handles URL sanitation, cross-platform Safari/WebKit quirks,
+ * content-type verification, and graceful error reporting preventing
+ * "The string did not match the expected pattern" and JSON parse crashes.
  */
 
 export interface ApiResponse<T = any> {
@@ -13,17 +14,50 @@ export interface ApiResponse<T = any> {
 }
 
 /**
+ * Sanitizes and validates a backend URL string.
+ * Handles common user mistakes like missing https://, trailing slashes,
+ * quotes, and string literals like "undefined" or "null".
+ */
+export function sanitizeBackendUrl(rawUrl?: string | null): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  let url = rawUrl.trim();
+
+  // Strip wrapping quotes if user pasted with quotes
+  if ((url.startsWith('"') && url.endsWith('"')) || (url.startsWith("'") && url.endsWith("'"))) {
+    url = url.slice(1, -1).trim();
+  }
+
+  // Filter out invalid literal strings
+  if (url === 'undefined' || url === 'null' || url === '[object Object]' || url === '') {
+    return '';
+  }
+
+  // If user entered a domain like my-app.onrender.com without protocol, add https://
+  if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('/')) {
+    if (url.includes('.') || url.includes('localhost') || url.includes(':')) {
+      url = `https://${url}`;
+    }
+  }
+
+  // Remove trailing slashes
+  return url.replace(/\/+$/, '');
+}
+
+/**
  * Returns the configured backend URL.
  * Order of priority:
  * 1. User custom backend in localStorage ('sw_custom_backend')
  * 2. Vite environment variable import.meta.env.VITE_BACKEND_URL
- * 3. Default: empty string (same-origin relative path '/api/...')
+ * 3. Default: empty string (same-origin)
  */
 export function getBackendBaseUrl(): string {
   if (typeof window !== 'undefined') {
-    const custom = localStorage.getItem('sw_custom_backend');
-    if (custom && custom.trim()) {
-      return custom.trim().replace(/\/+$/, '');
+    try {
+      const custom = localStorage.getItem('sw_custom_backend');
+      const sanitized = sanitizeBackendUrl(custom);
+      if (sanitized) return sanitized;
+    } catch (e) {
+      // localStorage may be disabled in Safari Private Mode
     }
   }
 
@@ -40,34 +74,58 @@ export function getBackendBaseUrl(): string {
     envUrl = process.env.VITE_BACKEND_URL;
   }
 
-  if (envUrl && typeof envUrl === 'string' && envUrl.trim()) {
-    return envUrl.trim().replace(/\/+$/, '');
-  }
-
-  return '';
+  return sanitizeBackendUrl(envUrl);
 }
 
 export function setCustomBackendUrl(url: string | null): void {
   if (typeof window === 'undefined') return;
-  if (!url || !url.trim()) {
-    localStorage.removeItem('sw_custom_backend');
-  } else {
-    localStorage.setItem('sw_custom_backend', url.trim().replace(/\/+$/, ''));
+  try {
+    const sanitized = sanitizeBackendUrl(url);
+    if (!sanitized) {
+      localStorage.removeItem('sw_custom_backend');
+    } else {
+      localStorage.setItem('sw_custom_backend', sanitized);
+    }
+  } catch (e) {
+    console.warn('[SameWavelength] Unable to access localStorage:', e);
   }
 }
 
 /**
+ * Builds a valid, fully-qualified URL for both fetch and EventSource,
+ * preventing Safari from throwing "The string did not match the expected pattern".
+ */
+export function buildApiUrl(endpoint: string): string {
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const baseUrl = getBackendBaseUrl();
+
+  if (baseUrl) {
+    return `${baseUrl}${cleanEndpoint}`;
+  }
+
+  // If in browser and no baseUrl, construct absolute URL from window.location.origin
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return `${window.location.origin}${cleanEndpoint}`;
+  }
+
+  return cleanEndpoint;
+}
+
+/**
  * Executes a fetch request safely, verifying that the response is valid JSON
- * before parsing. If the server returns HTML (e.g. 404 from static host like Vercel),
- * it returns a helpful, human-readable error instead of throwing a SyntaxError.
+ * before parsing.
+ *
+ * NOTE: Instead of calling `res.json()` directly (which in Safari/WebKit throws
+ * "The string did not match the expected pattern" when the response is not valid JSON),
+ * this uses `res.text()` followed by safe JSON.parse in try/catch.
  */
 export async function safeFetchJson<T = any>(
   endpoint: string,
   options?: RequestInit
 ): Promise<ApiResponse<T>> {
-  const baseUrl = getBackendBaseUrl();
-  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  const fullUrl = baseUrl ? `${baseUrl}${cleanEndpoint}` : cleanEndpoint;
+  const fullUrl = buildApiUrl(endpoint);
+
+  console.log(`[SameWavelength API] Request: ${options?.method || 'GET'} ${fullUrl}`);
 
   try {
     const res = await fetch(fullUrl, {
@@ -79,31 +137,45 @@ export async function safeFetchJson<T = any>(
     });
 
     const contentType = res.headers.get('content-type') || '';
-    const isJson = contentType.toLowerCase().includes('application/json');
+    const isJsonHeader = contentType.toLowerCase().includes('application/json');
 
-    // If response is NOT JSON, handle HTML/text gracefully
-    if (!isJson) {
-      const rawText = await res.text();
-      const isHtml = rawText.trim().startsWith('<') || rawText.toLowerCase().includes('<!doctype') || rawText.toLowerCase().includes('the page c');
+    // Read body as text first to prevent Safari SyntaxError crashes
+    const rawText = await res.text();
 
-      if (res.status === 404 || isHtml) {
-        return {
-          ok: false,
-          status: res.status,
-          isHtmlFallback: true,
-          error: `Backend non trovato su ${fullUrl} (HTTP ${res.status}). Se l'app è su Vercel, il frontend è ospitato staticamente e richiede un backend Node.js attivo (imposta VITE_BACKEND_URL o configura il server).`,
-        };
-      }
+    console.log(`[SameWavelength API] Response ${res.status} from ${endpoint} (type: ${contentType}, length: ${rawText.length})`);
 
+    // Check if the response is an HTML error page (common on Vercel 404/502)
+    const isHtml = rawText.trim().startsWith('<') || 
+                   rawText.toLowerCase().includes('<!doctype') || 
+                   rawText.toLowerCase().includes('the page c');
+
+    if (isHtml || (!isJsonHeader && !res.ok)) {
+      console.warn(`[SameWavelength API] Received HTML or non-JSON response from ${fullUrl}:`, rawText.slice(0, 150));
       return {
         ok: false,
         status: res.status,
-        error: `Risposta imprevista dal server (HTTP ${res.status}): ${rawText.slice(0, 100)}...`,
+        isHtmlFallback: isHtml,
+        error: res.status === 404
+          ? `Backend non raggiungibile su ${fullUrl} (HTTP 404). Su Vercel, il frontend è statico: configura VITE_BACKEND_URL con il tuo backend Node.js (es. su Render o Railway).`
+          : `Risposta imprevista dal server (HTTP ${res.status}).`,
       };
     }
 
-    // Response is JSON - parse safely
-    const data = await res.json();
+    // Try parsing JSON safely
+    let data: any = undefined;
+    if (rawText && rawText.trim()) {
+      try {
+        data = JSON.parse(rawText);
+      } catch (parseError: any) {
+        console.warn(`[SameWavelength API] JSON parse error from ${fullUrl}:`, parseError, rawText.slice(0, 150));
+        return {
+          ok: false,
+          status: res.status,
+          isHtmlFallback: false,
+          error: `Il server ha risposto con dati non validi (HTTP ${res.status}).`,
+        };
+      }
+    }
 
     if (!res.ok) {
       return {
@@ -120,10 +192,11 @@ export async function safeFetchJson<T = any>(
       data,
     };
   } catch (err: any) {
+    console.error(`[SameWavelength API] Network failure connecting to ${fullUrl}:`, err);
     return {
       ok: false,
       status: 0,
-      error: `Impossibile contattare il server: ${err.message || 'Errore di rete'}. Verifica la connessione.`,
+      error: `Impossibile contattare il server: ${err.message || 'Errore di connessione'}. Verifica la connessione o l'URL del backend.`,
     };
   }
 }
