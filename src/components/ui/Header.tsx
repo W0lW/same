@@ -1,20 +1,23 @@
 import React, { useState } from 'react';
-import { Volume2, VolumeX, Bell, BellOff, Copy, Check, LogOut, HelpCircle, Sparkles } from 'lucide-react';
+import { Volume2, VolumeX, Bell, BellOff, Copy, Check, LogOut, HelpCircle, Sparkles, Server } from 'lucide-react';
 import { sounds } from '../../audio/soundEffects';
 
 interface HeaderProps {
   roomCode?: string;
   isConnected?: boolean;
+  isBackendUnreachable?: boolean;
   onLeaveRoom?: () => void;
   onOpenHelp?: () => void;
-  onOpenSettings?: () => void;
+  onOpenBackendConfig?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   roomCode,
   isConnected = true,
+  isBackendUnreachable = false,
   onLeaveRoom,
   onOpenHelp,
+  onOpenBackendConfig,
 }) => {
   const [isMuted, setIsMuted] = useState(sounds.getMuted());
   const [copied, setCopied] = useState(false);
@@ -115,6 +118,22 @@ export const Header: React.FC<HeaderProps> = ({
         >
           {notificationsGranted ? <Bell className="w-4 h-4 text-sky-300" /> : <BellOff className="w-4 h-4" />}
         </button>
+
+        {/* Server Config / Backend Status */}
+        {onOpenBackendConfig && (
+          <button
+            onClick={onOpenBackendConfig}
+            aria-label="Configurazione Server Multiplayer"
+            title={isBackendUnreachable ? 'Backend non raggiungibile (clicca per configurare)' : 'Configurazione Server Multiplayer'}
+            className={`p-2 rounded-xl border transition-all ${
+              isBackendUnreachable
+                ? 'bg-rose-950/60 border-rose-500 text-rose-300 animate-pulse'
+                : 'bg-slate-900/60 border-slate-700/60 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <Server className="w-4 h-4" />
+          </button>
+        )}
 
         {/* Help */}
         {onOpenHelp && (
