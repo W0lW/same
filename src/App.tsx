@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useMultiplayer } from './hooks/useMultiplayer';
 import { Header } from './components/ui/Header';
 import { HomeScreen } from './components/screens/HomeScreen';
@@ -11,6 +11,7 @@ import { ChaosRound } from './components/screens/ChaosRound';
 import { SecretChemistryRound } from './components/screens/SecretChemistryRound';
 import { RevealScreen } from './components/screens/RevealScreen';
 import { GameOverScreen } from './components/screens/GameOverScreen';
+import { ArcadeInterlude } from './components/screens/ArcadeInterlude';
 import { HowToPlayModal } from './components/modals/HowToPlayModal';
 import { BackendConfigModal } from './components/modals/BackendConfigModal';
 import { NotificationToast } from './components/notifications/NotificationToast';
@@ -45,6 +46,19 @@ export default function App() {
   const [joinCodeParam, setJoinCodeParam] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
+  const [arcadeRound, setArcadeRound] = useState<number | null>(null);
+  const seenRevealKey = useRef('');
+
+  // Arcade breaks run during the reveal window between questions, never during the answer timer.
+  useEffect(() => {
+    const round = room?.currentRound;
+    if (room?.status !== 'IN_PROGRESS' || !round?.revealedAnswers) return;
+    const key = `${room.roomCode}:${round.roundNumber}`;
+    if (seenRevealKey.current !== key) {
+      seenRevealKey.current = key;
+      setArcadeRound(round.roundNumber);
+    }
+  }, [room?.roomCode, room?.status, room?.currentRound?.roundNumber, !!room?.currentRound?.revealedAnswers]);
 
   // Check URL parameters for ?join=CODE or ?autostart=1
   useEffect(() => {
@@ -145,7 +159,13 @@ export default function App() {
           />
         ) : room.status === 'IN_PROGRESS' && room.currentRound ? (
           room.currentRound.revealedAnswers ? (
-            <RevealScreen
+            arcadeRound === room.currentRound.roundNumber ? (
+              <ArcadeInterlude
+                roundNumber={room.currentRound.roundNumber}
+                totalRounds={room.currentRound.totalRounds}
+                onContinue={() => setArcadeRound(null)}
+              />
+            ) : <RevealScreen
               round={room.currentRound}
               room={room}
               myPlayer={myPlayer}
