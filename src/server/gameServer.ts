@@ -538,10 +538,11 @@ export class GameServer {
       message: '✨ Risposte svelate! Scoprite la vostra sintonia!',
     });
 
-    // Auto-advance to next round after 8 seconds of celebration / reveal
+    // Keep the reveal/interlude window long enough for the arcade mini-game between questions.
+    // Players can still use the reveal screen's manual skip action to move on sooner.
     room.timerInterval = setTimeout(() => {
       this.startNextRound(room);
-    }, 8500);
+    }, 35000);
   }
 
   public nextRoundManual(roomCode: string) {
