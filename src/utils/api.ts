@@ -32,15 +32,32 @@ export function sanitizeBackendUrl(rawUrl?: string | null): string {
     return '';
   }
 
-  // If user entered a domain like my-app.onrender.com without protocol, add https://
-  if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('/')) {
-    if (url.includes('.') || url.includes('localhost') || url.includes(':')) {
+  // Relative paths are not valid backend base URLs; blank means same-origin.
+  if (url.startsWith('/')) return '';
+
+  // If user entered a domain without protocol, add the appropriate scheme.
+  if (!/^https?:\/\//i.test(url)) {
+    if (url.includes('localhost') || url.startsWith('127.0.0.1') || url.startsWith('0.0.0.0')) {
+      url = `http://${url}`;
+    } else if (url.includes('.')) {
       url = `https://${url}`;
+    } else {
+      return '';
     }
   }
 
-  // Remove trailing slashes
-  return url.replace(/\/+$/, '');
+  // Validate strictly before passing the value to Safari's fetch/EventSource APIs.
+  try {
+    const parsed = new URL(url);
+    if ((parsed.protocol !== 'https:' && parsed.protocol !== 'http:') ||
+        !parsed.hostname || parsed.username || parsed.password ||
+        parsed.search || parsed.hash) {
+      return '';
+    }
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -96,6 +113,18 @@ export function setCustomBackendUrl(url: string | null): void {
  * preventing Safari from throwing "The string did not match the expected pattern".
  */
 export function buildApiUrl(endpoint: string): string {
+  // Allow a validated absolute URL for explicit backend health checks.
+  if (/^https?:\/\//i.test(endpoint)) {
+    try {
+      const absolute = new URL(endpoint);
+      if ((absolute.protocol === 'https:' || absolute.protocol === 'http:') && absolute.hostname) {
+        return absolute.toString();
+      }
+    } catch {
+      // Fall through to the normal same-origin builder for invalid input.
+    }
+  }
+
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   const baseUrl = getBackendBaseUrl();
 
