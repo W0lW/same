@@ -31,7 +31,7 @@ export const BackendConfigModal: React.FC<BackendConfigModalProps> = ({
 
     // Test connection using safeFetchJson
     try {
-      const res = await safeFetchJson<{ room: any }>('/api/rooms/TEST99/state');
+      const res = await safeFetchJson<{ room: any }>(fullUrl);
       if (res.status === 404 && res.data?.error === 'Stanza non trovata') {
         // A 404 JSON with {"error": "Stanza non trovata"} confirms the backend API is ALIVE!
         setTestStatus('success');
