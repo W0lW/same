@@ -36,7 +36,7 @@ export function sanitizeBackendUrl(rawUrl?: string | null): string {
   if (url.startsWith('/')) return '';
 
   // If user entered a domain without protocol, add the appropriate scheme.
-  if (!/^https?:\\/\\//i.test(url)) {
+  if (!/^https?:\/\//i.test(url)) {
     if (url.includes('localhost') || url.startsWith('127.0.0.1') || url.startsWith('0.0.0.0')) {
       url = `http://${url}`;
     } else if (url.includes('.')) {
@@ -54,7 +54,7 @@ export function sanitizeBackendUrl(rawUrl?: string | null): string {
         parsed.search || parsed.hash) {
       return '';
     }
-    return `${parsed.origin}${parsed.pathname.replace(/\\/+$/, '')}`;
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
   } catch {
     return '';
   }
@@ -114,7 +114,7 @@ export function setCustomBackendUrl(url: string | null): void {
  */
 export function buildApiUrl(endpoint: string): string {
   // Allow a validated absolute URL for explicit backend health checks.
-  if (/^https?:\\/\\//i.test(endpoint)) {
+  if (/^https?:\/\//i.test(endpoint)) {
     try {
       const absolute = new URL(endpoint);
       if ((absolute.protocol === 'https:' || absolute.protocol === 'http:') && absolute.hostname) {
